@@ -1,0 +1,315 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─── Enums ─────────────────────────────────────────────────────────
+
+enum Role {
+  ADMIN
+  DOCTOR
+  RECEPTIONIST
+  PATIENT
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum AppointmentStatus {
+  SCHEDULED
+  CHECKED_IN
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum InvoiceStatus {
+  PENDING
+  PAID
+  CANCELLED
+  REFUNDED
+}
+
+enum BedStatus {
+  AVAILABLE
+  OCCUPIED
+  MAINTENANCE
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  UPI
+  INSURANCE
+  OTHER
+}
+
+// ─── User ──────────────────────────────────────────────────────────
+
+model User {
+  id           String    @id @default(cuid())
+  name         String
+  email        String    @unique
+  passwordHash String
+  role         Role
+  phone        String?
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  doctorProfile DoctorProfile?
+  patient       Patient?
+  auditLogs     AuditLog[]
+  uploadedReports MedicalReport[] @relation("UploadedBy")
+
+  @@index([email])
+  @@index([role])
+}
+
+// ─── Department ────────────────────────────────────────────────────
+
+model Department {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+
+  doctors      DoctorProfile[]
+  appointments Appointment[]
+
+  @@index([name])
+}
+
+// ─── Doctor Profile ────────────────────────────────────────────────
+
+model DoctorProfile {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  departmentId    String
+  specialization  String
+  consultationFee Float
+  slotMinutes     Int      @default(30)
+  workingDays     String[] // e.g., ["MONDAY", "TUESDAY", ...]
+  startTime       String   // e.g., "09:00"
+  endTime         String   // e.g., "17:00"
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  department   Department    @relation(fields: [departmentId], references: [id])
+  appointments Appointment[] @relation("DoctorAppointments")
+  encounters   Encounter[]   @relation("DoctorEncounters")
+
+  @@index([departmentId])
+  @@index([userId])
+}
+
+// ─── Patient ───────────────────────────────────────────────────────
+
+model Patient {
+  id               String    @id @default(cuid())
+  userId           String?   @unique
+  mrn              String    @unique // Medical Record Number
+  name             String
+  dateOfBirth      DateTime
+  gender           Gender
+  phone            String
+  email            String?
+  bloodGroup       String?
+  allergies        String?
+  address          String?
+  emergencyContact String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  user         User?           @relation(fields: [userId], references: [id])
+  appointments Appointment[]
+  encounters   Encounter[]     @relation("PatientEncounters")
+  reports      MedicalReport[]
+  invoices     Invoice[]
+  beds         Bed[]
+
+  @@index([mrn])
+  @@index([name])
+  @@index([phone])
+  @@index([email])
+}
+
+// ─── Appointment ───────────────────────────────────────────────────
+
+model Appointment {
+  id           String            @id @default(cuid())
+  patientId    String
+  doctorId     String
+  departmentId String
+  startsAt     DateTime
+  endsAt       DateTime
+  status       AppointmentStatus @default(SCHEDULED)
+  reason       String
+  notes        String?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  patient    Patient       @relation(fields: [patientId], references: [id])
+  doctor     DoctorProfile @relation("DoctorAppointments", fields: [doctorId], references: [id])
+  department Department    @relation(fields: [departmentId], references: [id])
+  encounter  Encounter?
+  invoices   Invoice[]
+
+  // Prevent double-booking: a doctor cannot have overlapping appointments
+  @@unique([doctorId, startsAt], name: "unique_doctor_slot")
+  @@index([patientId])
+  @@index([doctorId])
+  @@index([departmentId])
+  @@index([startsAt])
+  @@index([status])
+  @@index([doctorId, startsAt, status])
+}
+
+// ─── Encounter ─────────────────────────────────────────────────────
+
+model Encounter {
+  id            String   @id @default(cuid())
+  appointmentId String   @unique
+  patientId     String
+  doctorId      String
+  symptoms      String
+  diagnosis     String
+  notes         String?
+  vitals        Json?    // { bp, pulse, temp, spo2, weight, height }
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  appointment   Appointment    @relation(fields: [appointmentId], references: [id])
+  patient       Patient        @relation("PatientEncounters", fields: [patientId], references: [id])
+  doctor        DoctorProfile  @relation("DoctorEncounters", fields: [doctorId], references: [id])
+  prescriptions Prescription[]
+
+  @@index([patientId])
+  @@index([doctorId])
+  @@index([appointmentId])
+}
+
+// ─── Prescription ──────────────────────────────────────────────────
+
+model Prescription {
+  id           String @id @default(cuid())
+  encounterId  String
+  medicine     String
+  dosage       String
+  frequency    String
+  durationDays Int
+  instructions String?
+
+  encounter Encounter @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+
+  @@index([encounterId])
+}
+
+// ─── Medical Report ────────────────────────────────────────────────
+
+model MedicalReport {
+  id           String   @id @default(cuid())
+  patientId    String
+  uploadedById String
+  title        String
+  storagePath  String
+  mimeType     String
+  fileSize     Int
+  createdAt    DateTime @default(now())
+
+  patient    Patient @relation(fields: [patientId], references: [id])
+  uploadedBy User    @relation("UploadedBy", fields: [uploadedById], references: [id])
+
+  @@index([patientId])
+  @@index([uploadedById])
+}
+
+// ─── Invoice ───────────────────────────────────────────────────────
+
+model Invoice {
+  id            String        @id @default(cuid())
+  invoiceNo     String        @unique
+  patientId     String
+  appointmentId String?
+  status        InvoiceStatus @default(PENDING)
+  subtotal      Float
+  tax           Float
+  total         Float
+  paymentMethod PaymentMethod?
+  paidAt        DateTime?
+  createdAt     DateTime      @default(now())
+
+  patient     Patient       @relation(fields: [patientId], references: [id])
+  appointment Appointment?  @relation(fields: [appointmentId], references: [id])
+  items       InvoiceItem[]
+
+  @@index([patientId])
+  @@index([appointmentId])
+  @@index([status])
+  @@index([invoiceNo])
+  @@index([createdAt])
+}
+
+// ─── Invoice Item ──────────────────────────────────────────────────
+
+model InvoiceItem {
+  id          String @id @default(cuid())
+  invoiceId   String
+  description String
+  quantity    Int
+  unitPrice   Float
+  amount      Float
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+}
+
+// ─── Bed ───────────────────────────────────────────────────────────
+
+model Bed {
+  id         String    @id @default(cuid())
+  ward       String
+  number     String
+  status     BedStatus @default(AVAILABLE)
+  patientId  String?
+  assignedAt DateTime?
+
+  patient Patient? @relation(fields: [patientId], references: [id])
+
+  @@unique([ward, number])
+  @@index([status])
+  @@index([ward])
+  @@index([patientId])
+}
+
+// ─── Audit Log ─────────────────────────────────────────────────────
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  action    String
+  entity    String
+  entityId  String?
+  ipAddress String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([entity])
+  @@index([action])
+  @@index([createdAt])
+  @@index([entityId])
+}
